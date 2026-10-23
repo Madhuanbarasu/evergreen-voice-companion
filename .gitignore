@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+.aws/
+data.json
+outbox.json
+HANDOFF.md
+.DS_Store

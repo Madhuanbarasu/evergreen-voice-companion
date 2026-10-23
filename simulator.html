@@ -1,0 +1,175 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evergreen: Alexa+-style Simulator (prototype)</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#f6f8f4;color:#1c2b1c}
+.banner{background:#fff3bf;border-bottom:2px solid #f59f00;padding:10px 16px;font-size:14px}
+.wrap{display:flex;gap:16px;max-width:1100px;margin:16px auto;padding:0 16px;flex-wrap:wrap}
+.col{flex:1;min-width:320px}
+.panel{background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 4px #0001}
+h2{margin:0 0 8px;font-size:16px}
+#chat{height:380px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
+.b{max-width:85%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.4}
+.me{align-self:flex-end;background:#d3f9d8}.bot{align-self:flex-start;background:#e7f5ff}
+.tabs button,.chips button,#send{border:1px solid #2f9e44;background:#fff;color:#2b8a3e;border-radius:18px;padding:6px 12px;cursor:pointer;font-size:13px;margin:2px}
+.tabs button.on{background:#2f9e44;color:#fff}
+.row{display:flex;gap:8px;margin-top:8px}.row input{flex:1;padding:9px;border:1px solid #adb5bd;border-radius:8px;font-size:14px}
+#log{height:470px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.call{border-left:4px solid #2f9e44;background:#f1f8f1;margin:8px 0;padding:6px 8px;border-radius:6px}
+.call b{color:#2b8a3e}.call pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word}
+a{color:#1971c2}
+#mic{border:1px solid #2f9e44;background:#fff;border-radius:8px;padding:0 12px;cursor:pointer;font-size:18px}
+#mic.on{background:#e03131;border-color:#e03131;color:#fff}#mic:disabled{opacity:.4;cursor:not-allowed}
+#vstat{font-size:12px;color:#495057;margin-top:6px;min-height:16px}#vopts{font-size:12px;margin-top:4px}
+</style></head><body>
+<div class="banner"><b>PROTOTYPE SIMULATOR.</b> Not connected to a real Alexa+ device or account. This page is a simple rule-based
+chat (no LLM) that calls Evergreen's <b>real MCP tools</b> over <code>/mcp</code> (Streamable HTTP). Not medical advice.<br>
+<b>Voice (browser prototype):</b> the mic uses your browser's Web Speech API. It is an Alexa+-style demo, <b>not real Alexa+ integration</b>. Typing still works.</div>
+<div class="wrap">
+ <div class="col panel">
+  <h2>🌿 Evergreen · <span id="who"></span></h2>
+  <div class="tabs"><button id="t-elder" class="on">Elder (Paati)</button><button id="t-family">Family</button>
+   <a href="/dashboard?name=paati"  style="float:right;font-size:13px">Open family dashboard ↗</a></div>
+  <div id="chat"></div>
+  <div class="chips" id="chips"></div>
+  <div class="row"><input id="inp" placeholder="Type a message..." autocomplete="off"><button id="mic" title="Click, then speak (e.g. &quot;Alexa, I feel dizzy today&quot;)">🎤</button><button id="send">Send</button></div>
+  <div id="vstat"></div>
+  <div id="vopts"><label><input type="checkbox" id="spk" checked> Read replies aloud</label> &nbsp;
+   <label><input type="checkbox" id="strip" checked> Remove leading "Alexa" from speech</label></div>
+ </div>
+ <div class="col panel"><h2>MCP tool calls (live)</h2><div id="log"></div></div>
+</div>
+<script>
+const NAME = "Paati";
+const MEDS = {"BP tablet": /\b(bp|blood pressure)\b/i, "Vitamin D": /vitamin/i};
+let mode = "elder", pendingStory = null, pendingNotify = null;
+
+const $ = id => document.getElementById(id);
+let speakNow = false;
+function speak(t){ if (!$("spk").checked || !("speechSynthesis" in window)) return;
+  try { const u = new SpeechSynthesisUtterance(t.replace(/\s*\n+\s*/g, ". ")); u.lang = "en-US"; speechSynthesis.speak(u); } catch(e){} }
+function say(text, who){ if (who !== "me" && speakNow) speak(text); const d = document.createElement("div"); d.className = "b " + (who === "me" ? "me" : "bot");
+  d.textContent = text; $("chat").appendChild(d); $("chat").scrollTop = 1e9; }
+function logCall(tool, args, result){ const d = document.createElement("div"); d.className = "call";
+  const h = document.createElement("b"); h.textContent = tool + "(" + JSON.stringify(args) + ")";
+  const p = document.createElement("pre"); p.textContent = JSON.stringify(result, null, 2);
+  d.append(h, p); $("log").appendChild(d); $("log").scrollTop = 1e9; }
+
+async function mcp(tool, args){
+  const r = await fetch("/mcp", {method: "POST",
+    headers: {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+    body: JSON.stringify({jsonrpc: "2.0", id: Date.now(), method: "tools/call", params: {name: tool, arguments: args}})});
+  const j = await r.json();
+  if (j.error || !j.result) throw new Error(JSON.stringify(j.error || j));
+  const out = JSON.parse(j.result.content[0].text);
+  logCall(tool, args, out); return out;
+}
+
+function parseCheckin(text){
+  const meds_taken = [];
+  for (const [med, re] of Object.entries(MEDS)){
+    const m = re.exec(text); if (!m) continue;
+    const before = text.slice(Math.max(0, m.index - 28), m.index);
+    if (/forgot|missed|didn't|did not|not take|haven't/i.test(before)) continue;
+    if (/took|taken|had|ate/i.test(before)) meds_taken.push(med);
+  }
+  const symptomRe = /dizz|pain|ache|breath|weak|fell|fall|chest/i;
+  const symptoms = symptomRe.test(text) ? text : "";
+  const mood = symptoms || /sad|low|tired|lonely|bad/i.test(text) ? 2 : /great|wonderful|happy|good|fine/i.test(text) ? 4 : 3;
+  return {name: NAME, mood, meds_taken, symptoms};
+}
+
+async function elderTurn(text){
+  if (pendingStory){
+    const card = await mcp("save_memory", {name: NAME, theme: pendingStory, story: text});
+    pendingStory = null;
+    say("What a lovely story. I've saved it to your life-story book for the family. (" + card.total_memories + " stories saved so far.)");
+    return;
+  }
+  const res = await mcp("log_checkin", parseCheckin(text));
+  let reply = "Thank you for telling me, Paati.";
+  if (res.missed_today.length) reply += " I noticed you haven't taken your " + res.missed_today.join(" and ") + " yet today. Please take it when you can.";
+  if (res.symptoms_noted) reply += " I'm sorry you're feeling unwell. Please sit down and rest, and consider telling your family or your doctor.";
+  say(reply);
+  const q = await mcp("suggest_story_prompt", {name: NAME});
+  pendingStory = q.theme;
+  say("Now a little question, just for fun: " + q.question);
+}
+
+async function familyTurn(text){
+  if (pendingNotify && /^(y|yes|ok|sure|send)/i.test(text)){
+    const n = await mcp("notify_family", {name: NAME, message: pendingNotify, urgency: "urgent"});
+    pendingNotify = null;
+    say("Done. The alert was recorded (delivery: " + n.delivery + ").");
+    return;
+  }
+  const s = await mcp("weekly_summary", {name: NAME});
+  let reply = "This week for " + s.name + ": " + s.checkins + " check-ins, average mood " + s.avg_mood + ", trend " + s.trend + ". " +
+    s.missed_doses + " missed doses, " + s.memories_this_week + " new stories.";
+  if (s.alert){
+    reply += "\n\nAttention: " + s.flags.join("; ") + ".\nI'd suggest calling her and checking in with her doctor. Shall I send an urgent alert to the family?";
+    pendingNotify = s.name + ": " + s.flags.join("; ") + ". Please check in with her today.";
+  }
+  if (s.latest_memory) reply += "\n\nLatest story (" + s.latest_memory.theme + "): " + s.latest_memory.story;
+  say(reply);
+}
+
+async function send(text){
+  text = (text || $("inp").value).trim(); if (!text) return; $("inp").value = "";
+  say(text, "me");
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  speakNow = true;
+  try { await (mode === "elder" ? elderTurn(text) : familyTurn(text)); }
+  catch(e){ say("Could not reach the Evergreen MCP server: " + e.message); }
+  finally { speakNow = false; }
+}
+
+// ---- Browser voice prototype (Web Speech API; not real Alexa+) ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, gotResult = false;
+function vstat(t){ $("vstat").textContent = t; }
+function stripAlexa(t){ return t.replace(/^\s*(?:(?:hey|hi|hello|ok|okay)[\s,]+)?alexa\+?[\s,.:;!?-]*/i, "").trim(); }
+const VOICE_ERR = {"not-allowed": "Microphone permission was blocked. Allow the mic for this site (lock icon in the address bar), or just type.",
+  "service-not-allowed": "Speech recognition is not allowed in this browser. Please type instead.",
+  "no-speech": "I didn't hear anything. Click the mic and try again, or type.",
+  "audio-capture": "No microphone found. Please connect one, or type.",
+  "network": "Speech recognition needs an internet connection in this browser. Please type instead."};
+function startVoice(){
+  if (listening){ rec.stop(); return; }
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  gotResult = false; rec = new SR(); rec.lang = "en-IN"; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.onstart = () => { listening = true; $("mic").classList.add("on"); vstat("🔴 Listening... say e.g. \"Alexa, I feel dizzy today\""); };
+  rec.onresult = e => {
+    let txt = ""; for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+    const fin = e.results[e.results.length - 1].isFinal; $("inp").value = txt;
+    if (!fin) return;
+    gotResult = true; let msg = txt.trim();
+    if ($("strip").checked) msg = stripAlexa(msg);
+    $("inp").value = "";
+    if (!msg){ vstat("Heard only \"Alexa\". Click the mic and say your message."); return; }
+    vstat("Heard: \"" + txt.trim() + "\""); send(msg);
+  };
+  rec.onerror = e => { gotResult = true; vstat(VOICE_ERR[e.error] || ("Voice error: " + e.error + ". Please type instead.")); };
+  rec.onend = () => { listening = false; $("mic").classList.remove("on");
+    if (!gotResult) { $("inp").value = ""; vstat("I didn't catch that. Click the mic and try again, or type."); } };
+  try { rec.start(); } catch(e){ vstat("Could not start the microphone: " + e.message); }
+}
+if (!SR){ $("mic").disabled = true; $("mic").title = "Voice input is not supported in this browser";
+  vstat("Voice input isn't supported in this browser (try Chrome or Edge). Typing works as normal."); }
+else $("mic").onclick = startVoice;
+if (!("speechSynthesis" in window)){ $("spk").checked = false; $("spk").disabled = true; }
+
+const CHIPS = {
+  elder: ["I took my vitamin but forgot my BP tablet, feeling a bit dizzy", "Our house had a swing on the verandah where Appa read the newspaper."],
+  family: ["How is Paati this week?", "Yes, send the alert"]
+};
+function setMode(m){
+  mode = m; pendingStory = null; pendingNotify = null; $("chat").innerHTML = "";
+  $("t-elder").classList.toggle("on", m === "elder"); $("t-family").classList.toggle("on", m === "family");
+  $("who").textContent = m === "elder" ? "talking with Paati" : "family view";
+  $("chips").innerHTML = ""; CHIPS[m].forEach(t => { const b = document.createElement("button"); b.textContent = t; b.onclick = () => send(t); $("chips").appendChild(b); });
+  say(m === "elder" ? "Good evening, Paati. How are you feeling today, and did you take your medicines?" : "Hello! Ask me how Paati is doing.");
+}
+$("t-elder").onclick = () => setMode("elder"); $("t-family").onclick = () => setMode("family");
+$("send").onclick = () => send(); $("inp").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+setMode("elder");
+</script></body></html>

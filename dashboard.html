@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evergreen Family Dashboard</title>
+<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;background:#f6f8f4;color:#1c2b1c}
+.card{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 1px 4px #0001}
+.alert{background:#fff1e6;border-left:5px solid #e8590c}.ok{border-left:5px solid #2f9e44}
+.row{display:flex;gap:12px;flex-wrap:wrap}.stat{flex:1;min-width:120px;text-align:center}.stat b{font-size:28px;display:block}
+.mem{border-left:4px solid #94d82d}.theme{font-size:12px;text-transform:uppercase;color:#2f9e44}</style></head><body>
+<h1>🌿 Evergreen</h1><p>Family view for <b id="n"></b></p><div id="s"></div><h2>Life-story book</h2><div id="m"></div>
+<script>
+const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const name=new URLSearchParams(location.search).get("name")||"paati";document.getElementById("n").textContent=name;
+fetch("/api/summary/"+name).then(r=>r.json()).then(s=>{document.getElementById("s").innerHTML=
+`<div class="card ${s.alert?'alert':'ok'}"><b>${s.alert?'⚠️ Attention needed':'✅ All good this week'}</b><ul>${s.flags.map(f=>'<li>'+esc(f)+'</li>').join('')}</ul></div>
+<div class="card row"><div class="stat"><b>${s.avg_mood??'-'}</b>avg mood</div><div class="stat"><b>${s.trend}</b>trend</div>
+<div class="stat"><b>${s.missed_doses}</b>missed doses</div><div class="stat"><b>${s.memories_this_week}</b>new stories</div></div>`});
+fetch("/api/memories/"+name).then(r=>r.json()).then(a=>{document.getElementById("m").innerHTML=a.slice().reverse().map(x=>
+`<div class="card mem"><div class="theme">${esc(x.theme)} ${x.year?'· '+esc(x.year):''}</div><p>${esc(x.story)}</p><small>${esc(x.date)}</small></div>`).join('')});
+</script></body></html>
